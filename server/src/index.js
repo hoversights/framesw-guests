@@ -14,6 +14,7 @@ License: AGPLv3 (see LICENSE at the repository root).
 */
 export { Handshake } from "./handshake.js";
 export { ApiRelay } from "./api.js";
+import { checkPass } from "./pass.js";
 
 export default {
   async fetch(request, env) {
@@ -24,19 +25,34 @@ export default {
       if (!upgrade) return new Response("FrameSW Guests handshake", { status: 200 });
       if (!originAllowed(request, env)) return new Response("Forbidden", { status: 403 });
       if (!(await allowed(env.CONNECT_LIMIT, request))) return new Response("Too many", { status: 429 });
-      return env.HANDSHAKE.get(env.HANDSHAKE.idFromName("global")).fetch(request);
+      // Only a connection FrameSW sent (its guest pass); the handshake
+      // meters viewing time against the pass's licence.
+      const pass = await checkPass(request, env);
+      if (!pass) return new Response("No guest pass", { status: 401 });
+      const inner = new Request(request);
+      inner.headers.set("X-FrameSW-Licence", pass.l);
+      return env.HANDSHAKE.get(env.HANDSHAKE.idFromName("global")).fetch(inner);
     }
     if (path === "/api" || path.startsWith("/api/")) {
       if (upgrade && !originAllowed(request, env)) return new Response("Forbidden", { status: 403 });
       if (!(await allowed(env.CONNECT_LIMIT, request))) return new Response("Too many", { status: 429 });
+      if (!(await checkPass(request, env))) {
+        // The page's socket is refused outright; FrameSW's HTTP calls get
+        // a body it already reads as a failure.
+        return upgrade ? new Response("No guest pass", { status: 401 }) : new Response("nopass", { status: 200 });
+      }
       return env.API.get(env.API.idFromName("global")).fetch(request);
     }
     if (path === "/turn" || path === "/turn/") {
       // A relay is the one thing here that costs by the gigabyte: only our
-      // own pages get its credentials, a few times a minute each.
+      // own pages get its credentials, a few times a minute each, and only
+      // with a guest pass.
       if (!request.headers.get("Origin") && !request.headers.get("Referer")) return new Response("Forbidden", { status: 403 });
       if (!originAllowed(request, env, true)) return new Response("Forbidden", { status: 403 });
       if (!(await allowed(env.TURN_LIMIT, request))) return new Response("Too many", { status: 429 });
+      if (!(await checkPass(request, env))) {
+        return new Response(JSON.stringify({ servers: [] }), { status: 401, headers: { "Content-Type": "application/json" } });
+      }
       return turn(request, env);
     }
     return env.ASSETS.fetch(request);

@@ -3278,12 +3278,17 @@
 				// looked it up before it existed, 2026-10-07).
 				var framesw = location.host;
 				var framesWs = (location.protocol === "http:" ? "ws://" : "wss://") + framesw;
-				session.wss = framesWs + "/wss";
+				// The guest pass FrameSW put in this link (`&fsw=`): without it
+				// our servers answer nothing (server/src/pass.js).
+				var fswPass = "";
+				try { fswPass = new URLSearchParams(location.search).get("fsw") || ""; } catch (e) {}
+				var fswQuery = fswPass ? "?fsw=" + encodeURIComponent(fswPass) : "";
+				session.wss = framesWs + "/wss" + fswQuery;
 				session.customWSS = false; // the routed protocol (vdoninja_advanced.js)
-				session.apiserver = framesWs + "/api";
+				session.apiserver = framesWs + "/api" + fswQuery;
 				session.configuration = { iceServers: session.stunServers.slice(), sdpSemantics: session.sdpSemantics };
 				session.ws = false; // hold the connection until the TURN list is in
-				fetch(location.protocol + "//" + framesw + "/turn")
+				fetch(location.protocol + "//" + framesw + "/turn" + fswQuery)
 					.then(function (r) { return r.json(); })
 					.catch(function () { return { servers: [] }; })
 					.then(function (data) {

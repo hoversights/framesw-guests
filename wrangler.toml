@@ -19,6 +19,14 @@ run_worker_first = ["/wss", "/wss/*", "/api", "/api/*", "/turn", "/turn/*"]
 
 [vars]
 ALLOWED_ORIGINS = "https://guests.framesw.com,https://rooms.framesw.com"
+# Where the handshake sends viewing minutes (FrameSW's licence server).
+GUEST_USAGE_URL = "https://api.framesw.com/guest-usage"
+
+# Licences past what they may use, written by the licence server
+# (framesw-license, same namespace): their passes stop at once.
+[[kv_namespaces]]
+binding = "GUEST_BLOCKS"
+id = "e518053a2d354b2da0fc018f9500b615"
 
 # Per address: relay credentials 10 a minute, connections 60 a minute.
 [[ratelimits]]
@@ -44,5 +52,6 @@ tag = "v1"
 new_sqlite_classes = ["Handshake", "ApiRelay"]
 
 # Secrets (wrangler secret put): TURN_KEY_ID, TURN_KEY_API_TOKEN, from
-# Cloudflare dashboard > Realtime > TURN Server. Without them /turn answers
-# an empty list and guests connect over STUN only.
+# Cloudflare dashboard > Realtime > TURN Server (without them /turn answers
+# an empty list and guests connect over STUN only); GUEST_PASS_SECRET, the
+# licence server's too (with it, every connection needs a guest pass).
