@@ -3264,6 +3264,33 @@
 			// session.salt = location.hostname; // used only if password is not == False. You can change to "session.salt = location.hostname+location.pathname;" for greater deployment isolation
 			
 			session.stunServers = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"]}]; // google + cloudflare stun servers. default
+
+			/////////////// ------ FrameSW Guests: our own servers (FrameSW GUEST_SERVICE_PLAN.md) ------
+			// Self-hosted on Cloudflare so FrameSW's live guests use no one else's
+			// servers: the handshake and the API relay are ours (server/), and the
+			// TURN list comes from Cloudflare Realtime TURN through our /turn. The
+			// page waits for that list before connecting, as the PHP example below
+			// does; without an answer it connects with STUN only.
+			if (location.hostname === "guests.framesw.com" || location.hostname.endsWith(".framesw-guests.pages.dev") || location.hostname === "localhost") {
+				var framesw = location.hostname === "localhost" ? location.host : "rooms.framesw.com";
+				var framesWs = (location.hostname === "localhost" ? "ws://" : "wss://") + framesw;
+				session.wss = framesWs + "/wss";
+				session.customWSS = false; // the routed protocol (vdoninja_advanced.js)
+				session.apiserver = framesWs + "/api";
+				session.configuration = { iceServers: session.stunServers.slice(), sdpSemantics: session.sdpSemantics };
+				session.ws = false; // hold the connection until the TURN list is in
+				fetch((location.hostname === "localhost" ? "http://" : "https://") + framesw + "/turn")
+					.then(function (r) { return r.json(); })
+					.catch(function () { return { servers: [] }; })
+					.then(function (data) {
+						(data.servers || []).forEach(function (t) { session.configuration.iceServers.push(t); });
+						if (session.ws === false) {
+							session.ws = null;
+							session.connect();
+						}
+					});
+			}
+			/////////////// ------ end of FrameSW Guests ------
 			
 			
 			///////////////  ------  Custom basic TURN SETUP SECTION STARTS Here --------

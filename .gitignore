@@ -10,3 +10,6 @@ cf/
 wrangler.toml
 package.json
 docs.md
+.dev.vars
+.wrangler
+node_modules

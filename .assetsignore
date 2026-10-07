@@ -1,0 +1,12 @@
+# Not served: the server, its config, the repository's own files, and the
+# background-effect models over Workers' 25 MiB per-file limit.
+.git
+.github
+server
+node_modules
+wrangler.toml
+.wrangler
+.assetsignore
+thirdparty/longpipe/models
+.dev.vars
+.gitignore
