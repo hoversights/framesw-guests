@@ -1,0 +1,37 @@
+# FrameSW Guests: VDO.Ninja self-hosted on Cloudflare (FrameSW GUEST_SERVICE_PLAN.md).
+# One Worker: the website as static assets on guests.framesw.com, and the
+# handshake (/wss), API relay (/api) and TURN list (/turn) on both
+# guests.framesw.com and rooms.framesw.com. Deploy: `npx wrangler deploy`.
+name = "framesw-guests"
+main = "server/src/index.js"
+compatibility_date = "2026-08-20"
+workers_dev = true
+
+routes = [
+  { pattern = "guests.framesw.com", custom_domain = true },
+  { pattern = "rooms.framesw.com", custom_domain = true },
+]
+
+[assets]
+directory = "."
+binding = "ASSETS"
+run_worker_first = ["/wss", "/wss/*", "/api", "/api/*", "/turn", "/turn/*"]
+
+[vars]
+ALLOWED_ORIGINS = "https://guests.framesw.com,https://rooms.framesw.com"
+
+[[durable_objects.bindings]]
+name = "HANDSHAKE"
+class_name = "Handshake"
+
+[[durable_objects.bindings]]
+name = "API"
+class_name = "ApiRelay"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Handshake", "ApiRelay"]
+
+# Secrets (wrangler secret put): TURN_KEY_ID, TURN_KEY_API_TOKEN, from
+# Cloudflare dashboard > Realtime > TURN Server. Without them /turn answers
+# an empty list and guests connect over STUN only.
