@@ -1,0 +1,6 @@
+# Guests pages are not rewritten: no Cloudflare Web Analytics beacon in them
+# (FRAMESW.md; operator, 2026-10-07).
+/
+  Cache-Control: public, max-age=0, must-revalidate, no-transform
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate, no-transform
