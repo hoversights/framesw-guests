@@ -23,22 +23,51 @@ export default {
     if (path === "/wss" || path.startsWith("/wss/")) {
       if (!upgrade) return new Response("FrameSW Guests handshake", { status: 200 });
       if (!originAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+      if (!(await allowed(env.CONNECT_LIMIT, request))) return new Response("Too many", { status: 429 });
       return env.HANDSHAKE.get(env.HANDSHAKE.idFromName("global")).fetch(request);
     }
     if (path === "/api" || path.startsWith("/api/")) {
       if (upgrade && !originAllowed(request, env)) return new Response("Forbidden", { status: 403 });
+      if (!(await allowed(env.CONNECT_LIMIT, request))) return new Response("Too many", { status: 429 });
       return env.API.get(env.API.idFromName("global")).fetch(request);
     }
     if (path === "/turn" || path === "/turn/") {
+      // A relay is the one thing here that costs by the gigabyte: only our
+      // own pages get its credentials, a few times a minute each.
+      if (!request.headers.get("Origin") && !request.headers.get("Referer")) return new Response("Forbidden", { status: 403 });
+      if (!originAllowed(request, env, true)) return new Response("Forbidden", { status: 403 });
+      if (!(await allowed(env.TURN_LIMIT, request))) return new Response("Too many", { status: 429 });
       return turn(request, env);
     }
     return env.ASSETS.fetch(request);
   },
 };
 
-/** A browser's page from our own site, or no browser at all (FrameSW). */
-function originAllowed(request, env) {
-  const origin = request.headers.get("Origin");
+/** Per address, a limit's worth a minute (Workers rate limiting). */
+async function allowed(limiter, request) {
+  if (!limiter) return true;
+  const key = request.headers.get("CF-Connecting-IP") || "unknown";
+  try {
+    const { success } = await limiter.limit({ key });
+    return success;
+  } catch (_) {
+    return true;
+  }
+}
+
+/**
+ * A browser's page from our own site, or no browser at all (FrameSW).
+ * `fromPage`: a same-origin fetch may carry only a Referer.
+ */
+function originAllowed(request, env, fromPage = false) {
+  let origin = request.headers.get("Origin");
+  if (!origin && fromPage) {
+    try {
+      origin = new URL(request.headers.get("Referer") || "").origin;
+    } catch (_) {
+      return false;
+    }
+  }
   if (!origin) return true;
   const ok = (env.ALLOWED_ORIGINS || "").split(",").map((s) => s.trim()).includes(origin);
   if (!ok) console.log("refused origin", origin);
