@@ -13,8 +13,10 @@ from them when the object wakes.
 License: AGPLv3 (see LICENSE at the repository root).
 */
 import { DurableObject } from "cloudflare:workers";
+import { settle, wanted } from "./meter.js";
 
-/** How often the viewing time is sent to the licence server. */
+/** How often the viewing time is sent to the licence server
+ * (`METER_EVERY_MS` in the environment, for a local test). */
 const METER_EVERY_MS = 5 * 60 * 1000;
 
 function readId(input) {
@@ -29,7 +31,7 @@ export class Handshake extends DurableObject {
 
   /** The maps vdoninja_advanced.js keeps, from the sockets' own state. */
   rebuild() {
-    this.meta = new Map(); // uuid -> { licence, viewSince } (metering)
+    this.meta = new Map(); // uuid -> { licence, views: Set(streamID) } (metering)
     this.clients = new Map(); // uuid -> ws
     this.streams = new Map(); // streamID -> uuid
     this.streamIDs = new Map(); // uuid -> streamID
@@ -42,7 +44,7 @@ export class Handshake extends DurableObject {
       const a = ws.deserializeAttachment();
       if (!a || !a.uuid) continue;
       this.clients.set(a.uuid, ws);
-      this.meta.set(a.uuid, { licence: a.licence || "open", viewSince: a.viewSince || null });
+      this.meta.set(a.uuid, { licence: a.licence || "open", views: new Set(a.views || []) });
       if (a.streamID) {
         this.streams.set(a.streamID, a.uuid);
         this.streamIDs.set(a.uuid, a.streamID);
@@ -62,7 +64,7 @@ export class Handshake extends DurableObject {
     const ws = this.clients.get(uuid);
     if (!ws) return;
     const room = this.myRooms.get(uuid) || null;
-    const meta = this.meta.get(uuid) || { licence: "open", viewSince: null };
+    const meta = this.meta.get(uuid) || { licence: "open", views: new Set() };
     ws.serializeAttachment({
       uuid,
       streamID: this.streamIDs.get(uuid) || null,
@@ -70,7 +72,7 @@ export class Handshake extends DurableObject {
       director: !!room && this.directors.get(room) === uuid,
       waiting: [...(this.callbackCleanup.get(uuid) || [])],
       licence: meta.licence,
-      viewSince: meta.viewSince,
+      views: [...meta.views],
     });
   }
 
@@ -83,54 +85,69 @@ export class Handshake extends DurableObject {
     this.ctx.acceptWebSocket(server);
     const uuid = crypto.randomUUID();
     this.clients.set(uuid, server);
-    this.meta.set(uuid, { licence: request.headers.get("X-FrameSW-Licence") || "open", viewSince: null });
+    this.meta.set(uuid, { licence: request.headers.get("X-FrameSW-Licence") || "open", views: new Set() });
     this.save(uuid);
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  // --- Metering (FrameSW GUEST_SERVICE_PLAN.md, "The gate", 3) ---
-  // A guest-hour is a viewer watching a guest for an hour: from the moment
-  // a viewer's `play` is put through to the guest (`offerSDP`) to its
-  // socket closing, against the licence on the viewer's pass. Kept here
-  // until the alarm sends it to the licence server, every few minutes.
+  // --- Metering (FrameSW GUEST_SERVICE_PLAN.md, "Closing the room, and
+  // what is counted") ---
+  // A guest-hour is a guest on screen for an hour: one clock for each guest
+  // a licence is showing, running while the guest is connected and at least
+  // one of that licence's picture pages has been put through to them. The
+  // rule itself is `meter.js`; here are the sockets it is read from. Kept
+  // in storage until the alarm sends it to the licence server.
 
-  /** Viewer `uuid` starts being metered, if it isn't already. Only a plain
-   * viewer (OBS's view page): a room's director plays every guest, and a
-   * guest plays the others to hear them, and neither is a guest on screen. */
-  async startViewing(uuid) {
-    const meta = this.meta.get(uuid);
-    if (!meta || meta.viewSince) return;
-    const room = this.myRooms.get(uuid);
-    if ((room && this.directors.get(room) === uuid) || this.streamIDs.has(uuid)) return;
-    meta.viewSince = Date.now();
-    this.save(uuid);
-    if ((await this.ctx.storage.getAlarm()) === null) {
-      await this.ctx.storage.setAlarm(Date.now() + METER_EVERY_MS);
-    }
+  meterEvery() {
+    return Number(this.env.METER_EVERY_MS) || METER_EVERY_MS;
   }
 
-  /** The minutes viewer `uuid` has watched since last counted, added to
-   * what is waiting to be sent; its clock restarts at now (or stops). */
-  async accrue(uuid, stillWatching) {
+  /** Viewer `uuid`'s `play` was put through to guest `streamID`. */
+  async startViewing(uuid, streamID) {
     const meta = this.meta.get(uuid);
-    if (!meta || !meta.viewSince) return;
-    const minutes = (Date.now() - meta.viewSince) / 60000;
-    meta.viewSince = stillWatching ? Date.now() : null;
-    if (stillWatching) this.save(uuid);
-    if (minutes <= 0 || meta.licence === "open") return;
+    if (!meta) return;
+    if (!meta.views.has(streamID)) {
+      meta.views.add(streamID);
+      this.save(uuid);
+    }
+    await this.settleMeter();
+  }
+
+  /** The clocks brought up to now, and set to what the sockets say should
+   * be running: after anything that can change them, and on the alarm. */
+  async settleMeter() {
+    const viewers = [];
+    for (const [uuid, meta] of this.meta) {
+      if (!this.clients.has(uuid)) continue;
+      const room = this.myRooms.get(uuid);
+      viewers.push({
+        licence: meta.licence,
+        views: meta.views,
+        director: !!room && this.directors.get(room) === uuid,
+        publisher: this.streamIDs.has(uuid),
+      });
+    }
+    const live = new Set();
+    for (const [streamID, uuid] of this.streams) {
+      if (this.clients.has(uuid)) live.add(streamID);
+    }
+    const running = (await this.ctx.storage.get("running")) || {};
     const pending = (await this.ctx.storage.get("pending")) || {};
-    pending[meta.licence] = (pending[meta.licence] || 0) + minutes;
-    await this.ctx.storage.put("pending", pending);
+    const next = settle(running, pending, wanted(viewers, live), Date.now());
+    await this.ctx.storage.put({ running: next.running, pending: next.pending });
+    if (Object.keys(next.running).length && (await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(Date.now() + this.meterEvery());
+    }
+    return next;
   }
 
   async alarm() {
-    for (const [uuid, meta] of this.meta) {
-      if (meta.viewSince && this.clients.has(uuid)) await this.accrue(uuid, true);
-    }
-    const pending = (await this.ctx.storage.get("pending")) || {};
+    const { running, pending } = await this.settleMeter();
     const usage = Object.entries(pending)
       .filter(([, m]) => m > 0)
-      .map(([l, m]) => ({ l, minutes: Math.round(m * 100) / 100 }));
+      // To a hundredth of a second: what is rounded away is not kept, and
+      // at two decimals that was up to 0.3 s of every report.
+      .map(([l, m]) => ({ l, minutes: Math.round(m * 10000) / 10000 }));
     if (usage.length && this.env.GUEST_USAGE_URL && this.env.GUEST_PASS_SECRET) {
       const body = JSON.stringify({ usage, at: Date.now() });
       const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(this.env.GUEST_PASS_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
@@ -142,10 +159,9 @@ export class Handshake extends DurableObject {
         // Kept, and sent with the next.
       }
     }
-    const watching = [...this.meta.values()].some((m) => m.viewSince);
     const left = (await this.ctx.storage.get("pending")) || {};
-    if (watching || Object.keys(left).length) {
-      await this.ctx.storage.setAlarm(Date.now() + METER_EVERY_MS);
+    if (Object.keys(running).length || Object.keys(left).length) {
+      await this.ctx.storage.setAlarm(Date.now() + this.meterEvery());
     }
   }
 
@@ -221,17 +237,17 @@ export class Handshake extends DurableObject {
   async webSocketClose(ws) {
     const uuid = this.uuidOf(ws);
     if (!uuid) return;
-    await this.accrue(uuid, false);
     this.cleanupClient(uuid);
     this.meta.delete(uuid);
+    await this.settleMeter();
   }
 
   async webSocketError(ws) {
     const uuid = this.uuidOf(ws);
     if (!uuid) return;
-    await this.accrue(uuid, false);
     this.cleanupClient(uuid);
     this.meta.delete(uuid);
+    await this.settleMeter();
   }
 
   async webSocketMessage(ws, raw) {
@@ -279,7 +295,7 @@ export class Handshake extends DurableObject {
           return;
         }
         this.safeSend(seeder, JSON.stringify({ request: "offerSDP", UUID: uuid }));
-        await this.startViewing(uuid);
+        await this.startViewing(uuid, streamID);
         break;
       }
       case "seed": {
@@ -299,10 +315,8 @@ export class Handshake extends DurableObject {
             this.cleanupClient(existing);
           }
         }
-        // A guest who played the others before seeding was no viewer: its
-        // clock goes, uncounted.
-        const meta = this.meta.get(uuid);
-        if (meta) meta.viewSince = null;
+        // A guest who played the others before seeding was never a viewer
+        // (`meter.js`: a publisher is not counted).
         this.streams.set(streamID, uuid);
         this.streamIDs.set(uuid, streamID);
         this.save(uuid);
@@ -320,9 +334,12 @@ export class Handshake extends DurableObject {
               this.save(viewer);
             }
             this.safeSend(requester, JSON.stringify({ request: "offerSDP", UUID: viewer }));
-            await this.startViewing(viewer);
+            await this.startViewing(viewer, streamID);
           }
         }
+        // The guest is there now: the pages already put through to them
+        // before they dropped are showing them again.
+        await this.settleMeter();
         break;
       }
       case "joinroom": {

@@ -37,3 +37,18 @@ Against `wrangler dev`, the same script as against vdo.ninja: a director
 with an API key, a guest in the waiting room, `getGuestList`, `forward` to
 the real room, a viewer (`&view=…&solo`) receiving 600x338 video; the
 pages called no host but ours.
+
+## What is counted (2026-10-11)
+
+A guest-hour is a guest on screen for an hour: one clock for each guest a
+licence is showing, running while the guest is connected and at least one
+of that licence's picture pages has been put through to them
+(`server/src/meter.js`, read from the sockets in `handshake.js`). Joining,
+waiting and being admitted count nothing; a guest in a Live guests tile
+and in a cue at once is counted once; the clock stops when the guest
+leaves or the last page showing them closes. Before, each picture page had
+a clock of its own that ran until that page closed, guest or no guest.
+
+Checked: `node --test server/test/meter.test.js` (the rule, 11 cases), and
+`server/test/local-meter-check.mjs` against `wrangler dev` (real sockets:
+shown for 16.0 s in all, 16.0 s counted; nobody showing them, 0).
