@@ -3287,6 +3287,12 @@
 				session.customWSS = false; // the routed protocol (vdoninja_advanced.js)
 				session.apiserver = framesWs + "/api" + fswQuery;
 				session.configuration = { iceServers: session.stunServers.slice(), sdpSemantics: session.sdpSemantics };
+				// A ceiling on the video any guest sends, whatever the viewer
+				// asks for: the relay is paid by the gigabyte (FrameSW
+				// GUEST_VIDEO_STANDARD.md, "Measured 2026-10-21": ~4 Mbps a
+				// guest without it; 2.5 Mbps holds 1280x720 at 30). A link's
+				// own &maxvideobitrate still wins: main.js sets it after this.
+				session.maxvideobitrate = 2500;
 				session.ws = false; // hold the connection until the TURN list is in
 				fetch(location.protocol + "//" + framesw + "/turn" + fswQuery)
 					.then(function (r) { return r.json(); })
