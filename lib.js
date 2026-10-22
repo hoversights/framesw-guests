@@ -9285,10 +9285,13 @@ function updateMixerRun(e = false) {
 						}
 						if (session.devicePixelRatio) {
 							session.requestResolution(vid.dataset.UUID, targetWidth * session.devicePixelRatio, targetHeight * session.devicePixelRatio, true, false, cover); // snap=true; if resolution close to 100%, send 100%. screenshare only
+							fswBoxBitrate(vid.dataset.UUID, targetWidth * session.devicePixelRatio, targetHeight * session.devicePixelRatio);
 						} else if (window.devicePixelRatio && parseInt(window.devicePixelRatio) > 1) {
 							session.requestResolution(vid.dataset.UUID, targetWidth * window.devicePixelRatio, targetHeight * window.devicePixelRatio, true, false, cover);
+							fswBoxBitrate(vid.dataset.UUID, targetWidth * window.devicePixelRatio, targetHeight * window.devicePixelRatio);
 						} else {
 							session.requestResolution(vid.dataset.UUID, targetWidth, targetHeight, true, false, cover);
+							fswBoxBitrate(vid.dataset.UUID, targetWidth, targetHeight);
 						}
 					}
 				}
@@ -9452,10 +9455,13 @@ function updateMixerRun(e = false) {
 						}
 						if (session.devicePixelRatio) {
 							session.requestResolution(vid.dataset.UUID, targetWidth * session.devicePixelRatio, targetHeight * session.devicePixelRatio, true, false, cover); // snap=true; if resolution close to 100%, send 100%. screenshare only
+							fswBoxBitrate(vid.dataset.UUID, targetWidth * session.devicePixelRatio, targetHeight * session.devicePixelRatio);
 						} else if (window.devicePixelRatio && parseInt(window.devicePixelRatio) > 1) {
 							session.requestResolution(vid.dataset.UUID, targetWidth * window.devicePixelRatio, targetHeight * window.devicePixelRatio, true, false, cover);
+							fswBoxBitrate(vid.dataset.UUID, targetWidth * window.devicePixelRatio, targetHeight * window.devicePixelRatio);
 						} else {
 							session.requestResolution(vid.dataset.UUID, targetWidth, targetHeight, true, false, cover);
+							fswBoxBitrate(vid.dataset.UUID, targetWidth, targetHeight);
 						}
 					}
 				}
@@ -9482,10 +9488,13 @@ function updateMixerRun(e = false) {
 						}
 						if (session.devicePixelRatio) {
 							session.requestResolution(vid.dataset.UUID, targetWidth * session.devicePixelRatio, targetHeight * session.devicePixelRatio, true, false, cover); // snap=true; if resolution close to 100%, send 100%. screenshare only
+							fswBoxBitrate(vid.dataset.UUID, targetWidth * session.devicePixelRatio, targetHeight * session.devicePixelRatio);
 						} else if (window.devicePixelRatio && parseInt(window.devicePixelRatio) > 1) {
 							session.requestResolution(vid.dataset.UUID, targetWidth * window.devicePixelRatio, targetHeight * window.devicePixelRatio, true, false, cover);
+							fswBoxBitrate(vid.dataset.UUID, targetWidth * window.devicePixelRatio, targetHeight * window.devicePixelRatio);
 						} else {
 							session.requestResolution(vid.dataset.UUID, targetWidth, targetHeight, true, false, cover);
+							fswBoxBitrate(vid.dataset.UUID, targetWidth, targetHeight);
 						}
 					}
 				}
@@ -66732,4 +66741,33 @@ async function handleAccessRequest(userId, action) {
 	} catch (e) {
 		console.error('Failed to handle access request:', e);
 	}
+}
+
+// FrameSW (2026-10-22, GUEST_VIDEO_STANDARD.md "⚠ Measured 2026-10-22"):
+// with &fswbox on a view link, the view asks its guest for a bitrate that
+// fits the size the picture is shown at, each time it asks for the size
+// itself: ~0.19 bits a pixel at 30 fps (~420 kbps for a 315x236 face; 0.143,
+// the bench's 800 kbps at 576x324, left a face box softer, at 315x177), from
+// 200 kbps to the 2,500 kbps ceiling. A
+// box made bigger (a player put full screen) asks again, with no reload.
+// A change under 15% is not asked for. Asked only once the guest's
+// connection is there, so the first ask is never lost.
+function fswBoxBitrate(UUID, width, height) {
+	if (!session.fswBox || !UUID || !session.rpcs || !session.rpcs[UUID]) {
+		return;
+	}
+	var ceiling = session.maxvideobitrate || 2500;
+	var kbps = Math.round((Math.max(0, width) * Math.max(0, height) * 30 * 0.19) / 1000);
+	kbps = Math.max(200, Math.min(ceiling, kbps));
+	session.fswBoxAsked = session.fswBoxAsked || {};
+	var last = session.fswBoxAsked[UUID];
+	if (last && Math.abs(last - kbps) / last < 0.15) {
+		return;
+	}
+	session.fswBoxAsked[UUID] = kbps;
+	log("FrameSW box bitrate: " + kbps + " kbps for " + Math.round(width) + "x" + Math.round(height));
+	// Locked, as the page's own API asks (`"bitrate" in e.data`, main.js): unlocked,
+	// the mixer asked for the saved bitrate again at once and the guest kept ~2.6 Mbps
+	// (bench, 2026-10-22).
+	session.requestRateLimit(kbps, UUID, false, true);
 }

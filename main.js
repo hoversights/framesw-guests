@@ -5815,6 +5815,12 @@ async function main() {
 		}
 	}
 
+	// FrameSW (2026-10-22): a view whose guest's bitrate follows the size the
+	// picture is shown at (`fswBoxBitrate` in lib.js).
+	if (urlParams.has("fswbox")) {
+		session.fswBox = true;
+	}
+
 	if (urlParams.has("maxvideobitrate") || urlParams.has("maxbitrate") || urlParams.has("maxvb") ||  urlParams.has("mvb")) {
 		session.maxvideobitrate = urlParams.get("maxvideobitrate") || urlParams.get("maxbitrate") ||  urlParams.get("maxvb") || urlParams.get("mvb");
 		session.maxvideobitrate = parseInt(session.maxvideobitrate);
