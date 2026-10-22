@@ -66748,10 +66748,10 @@ async function handleAccessRequest(userId, action) {
 // fits the size the picture is shown at, each time it asks for the size
 // itself: ~0.19 bits a pixel at 30 fps (~420 kbps for a 315x236 face; 0.143,
 // the bench's 800 kbps at 576x324, left a face box softer, at 315x177), from
-// 200 kbps to the 2,500 kbps ceiling. A
-// box made bigger (a player put full screen) asks again, with no reload.
-// A change under 15% is not asked for. Asked only once the guest's
-// connection is there, so the first ask is never lost.
+// 200 kbps to the 2,500 kbps ceiling. A box made bigger (a player put full
+// screen) asks again, with no reload. A change under 15% is not asked for.
+// Asked only once the guest's connection is there, so the first ask is never
+// lost. What is sent goes through the step-down ladder (`fswSend`).
 function fswBoxBitrate(UUID, width, height) {
 	if (!session.fswBox || !UUID || !session.rpcs || !session.rpcs[UUID]) {
 		return;
@@ -66759,15 +66759,103 @@ function fswBoxBitrate(UUID, width, height) {
 	var ceiling = session.maxvideobitrate || 2500;
 	var kbps = Math.round((Math.max(0, width) * Math.max(0, height) * 30 * 0.19) / 1000);
 	kbps = Math.max(200, Math.min(ceiling, kbps));
-	session.fswBoxAsked = session.fswBoxAsked || {};
-	var last = session.fswBoxAsked[UUID];
+	session.fswBoxWanted = session.fswBoxWanted || {};
+	var last = session.fswBoxWanted[UUID];
 	if (last && Math.abs(last - kbps) / last < 0.15) {
 		return;
 	}
-	session.fswBoxAsked[UUID] = kbps;
+	session.fswBoxWanted[UUID] = kbps;
 	log("FrameSW box bitrate: " + kbps + " kbps for " + Math.round(width) + "x" + Math.round(height));
-	// Locked, as the page's own API asks (`"bitrate" in e.data`, main.js): unlocked,
-	// the mixer asked for the saved bitrate again at once and the guest kept ~2.6 Mbps
-	// (bench, 2026-10-22).
+	fswSend(UUID, true);
+}
+
+// FrameSW (2026-10-22): the step-down ladder, for a machine falling behind.
+// FrameSW tells every guest page its rung through OBS (obs-browser's
+// emit_event "framesw-ladder", detail {rung}), and 0 again when it is calm:
+//   0  as usual: the bitrate for the shown size (`fswBoxBitrate`);
+//   1  half of it: fewer pixels and frames to decode;
+//   2  the guest's video paused while they are silent, so their picture
+//      holds as a still, and live again, at the whole of 0's, the moment
+//      they speak (operator:
+//      "allow a speaking guest to have a live video and the others are
+//      static"). A guest with no sound to judge stays live.
+// Only on a view with &fswbox. Each ask is locked, as the page's own API
+// asks: unlocked, the mixer put the old bitrate back at once.
+session.fswRung = 0;
+window.addEventListener("framesw-ladder", function (ev) {
+	var d = (ev && ev.detail) || {};
+	var rung = Math.max(0, Math.min(2, parseInt(d.rung, 10) || 0));
+	if (!session.fswBox || rung === session.fswRung) {
+		return;
+	}
+	session.fswRung = rung;
+	log("FrameSW ladder: rung " + rung);
+	for (var UUID in session.fswBoxWanted || {}) {
+		fswSend(UUID, true);
+	}
+	clearInterval(session.fswLadderInterval);
+	if (rung >= 2) {
+		session.fswLadderInterval = setInterval(function () {
+			for (var UUID in session.fswBoxWanted || {}) {
+				fswSend(UUID, false);
+			}
+		}, 250);
+	}
+});
+
+/** The bitrate asked of guest `UUID` now: its box's, on the ladder's rung. */
+function fswSend(UUID, force) {
+	var rpc = session.rpcs && session.rpcs[UUID];
+	var want = session.fswBoxWanted && session.fswBoxWanted[UUID];
+	if (!rpc || !want) {
+		return;
+	}
+	var kbps = session.fswRung === 1 ? Math.max(150, Math.round(want / 2)) : want;
+	if (session.fswRung >= 2 && !fswSpeaking(UUID)) {
+		kbps = 0; // paused: the picture holds as a still
+	}
+	// On rung 2 whoever speaks keeps their box's whole bitrate: the others
+	// are paused, and theirs is the picture being watched.
+	if (!force && rpc.fswSent === kbps) {
+		return;
+	}
+	rpc.fswSent = kbps;
 	session.requestRateLimit(kbps, UUID, false, true);
+}
+
+/** Whether guest `UUID` is speaking, or spoke in the last 2.5 s, from a meter
+ * of our own on their sound (above ~-34 dBFS): the page's own isn't running in
+ * a solo view (measured 2026-10-22). No sound to judge: yes, live. */
+function fswSpeaking(UUID) {
+	var rpc = session.rpcs[UUID];
+	var v = rpc && rpc.videoElement;
+	var track = v && v.srcObject && v.srcObject.getAudioTracks()[0];
+	if (!track) {
+		return true;
+	}
+	try {
+		if (!rpc.fswMeter || rpc.fswMeter.track !== track) {
+			session.fswAudio = session.fswAudio || new (window.AudioContext || window.webkitAudioContext)();
+			if (session.fswAudio.state === "suspended") {
+				session.fswAudio.resume();
+			}
+			var analyser = session.fswAudio.createAnalyser();
+			analyser.fftSize = 512;
+			session.fswAudio.createMediaStreamSource(new MediaStream([track])).connect(analyser);
+			rpc.fswMeter = { track: track, analyser: analyser, buf: new Uint8Array(analyser.fftSize), heardAt: Date.now() };
+		}
+		var m = rpc.fswMeter;
+		m.analyser.getByteTimeDomainData(m.buf);
+		var sum = 0;
+		for (var i = 0; i < m.buf.length; i++) {
+			var x = (m.buf[i] - 128) / 128;
+			sum += x * x;
+		}
+		if (Math.sqrt(sum / m.buf.length) > 0.02) {
+			m.heardAt = Date.now(); // about -34 dBFS: speech, not room hiss
+		}
+		return Date.now() - m.heardAt < 2500;
+	} catch (e) {
+		return true;
+	}
 }
