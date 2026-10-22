@@ -66752,9 +66752,19 @@ async function handleAccessRequest(userId, action) {
 // screen) asks again, with no reload. A change under 15% is not asked for.
 // Asked only once the guest's connection is there, so the first ask is never
 // lost. What is sent goes through the step-down ladder (`fswSend`).
+// A size FrameSW gave for this guest (`framesw-boxes`) wins over the page's
+// own: FrameSW's page in OBS keeps the frame's size (resizing it on air
+// re-took Program and lost a guest, Windows 2026-10-22), so the box it is
+// shown in is told, and asked for here, after the page's own ask.
 function fswBoxBitrate(UUID, width, height) {
 	if (!session.fswBox || !UUID || !session.rpcs || !session.rpcs[UUID]) {
 		return;
+	}
+	var target = fswBoxTargetFor(UUID);
+	if (target) {
+		width = target[0];
+		height = target[1];
+		session.requestResolution(UUID, width, height, true, false, true);
 	}
 	var ceiling = session.maxvideobitrate || 2500;
 	var kbps = Math.round((Math.max(0, width) * Math.max(0, height) * 30 * 0.19) / 1000);
@@ -66768,6 +66778,33 @@ function fswBoxBitrate(UUID, width, height) {
 	log("FrameSW box bitrate: " + kbps + " kbps for " + Math.round(width) + "x" + Math.round(height));
 	fswSend(UUID, true);
 }
+
+/** The size FrameSW said guest `UUID` is shown at (`framesw-boxes`), or null. */
+function fswBoxTargetFor(UUID) {
+	var rpc = session.rpcs && session.rpcs[UUID];
+	var sid = rpc && rpc.streamID;
+	var size = sid && session.fswBoxTarget && session.fswBoxTarget[sid];
+	return size && size.length === 2 && size[0] > 0 && size[1] > 0 ? size : null;
+}
+
+// FrameSW (2026-10-22): the size each guest is shown at in the show, from
+// FrameSW through OBS (obs-browser's emit_event "framesw-boxes", detail
+// {sizes: {streamID: [width, height]}}): this page asks its guest for a
+// picture and a bitrate that size, at once and again whenever it asks for a
+// size itself. Told again every few seconds, for a page loaded since.
+window.addEventListener("framesw-boxes", function (ev) {
+	var d = (ev && ev.detail) || {};
+	if (!session.fswBox || !d.sizes || typeof d.sizes !== "object") {
+		return;
+	}
+	session.fswBoxTarget = d.sizes;
+	for (var UUID in session.rpcs || {}) {
+		var target = fswBoxTargetFor(UUID);
+		if (target) {
+			fswBoxBitrate(UUID, target[0], target[1]);
+		}
+	}
+});
 
 // FrameSW (2026-10-22): the step-down ladder, for a machine falling behind.
 // FrameSW tells every guest page its rung through OBS (obs-browser's
