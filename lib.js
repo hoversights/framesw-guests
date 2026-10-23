@@ -66779,17 +66779,23 @@ function fswBoxBitrate(UUID, width, height) {
 	fswSend(UUID, true);
 }
 
-/** The size FrameSW said guest `UUID` is shown at (`framesw-boxes`), or null. */
+/** The size FrameSW said guest `UUID` is shown at (`framesw-boxes`), as
+ * [width, height], or null. Sent as {w, h}: through OBS (obs-browser's
+ * emit_event, obs_data) an array of numbers arrives empty (Windows,
+ * 2026-10-22); [w, h] still read, for a page told directly. */
 function fswBoxTargetFor(UUID) {
 	var rpc = session.rpcs && session.rpcs[UUID];
 	var sid = rpc && rpc.streamID;
 	var size = sid && session.fswBoxTarget && session.fswBoxTarget[sid];
+	if (size && !Array.isArray(size) && typeof size === "object") {
+		size = [Number(size.w), Number(size.h)];
+	}
 	return size && size.length === 2 && size[0] > 0 && size[1] > 0 ? size : null;
 }
 
 // FrameSW (2026-10-22): the size each guest is shown at in the show, from
 // FrameSW through OBS (obs-browser's emit_event "framesw-boxes", detail
-// {sizes: {streamID: [width, height]}}): this page asks its guest for a
+// {sizes: {streamID: {w, h}}}): this page asks its guest for a
 // picture and a bitrate that size, at once and again whenever it asks for a
 // size itself. Told again every few seconds, for a page loaded since.
 window.addEventListener("framesw-boxes", function (ev) {
